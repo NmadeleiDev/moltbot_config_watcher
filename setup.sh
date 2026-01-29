@@ -141,7 +141,14 @@ case "$OS" in
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>StandardOutPath</key>
     <string>$CONFIG_DIR/logs/git_watcher.out.log</string>
     <key>StandardErrorPath</key>

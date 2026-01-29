@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -16,6 +17,9 @@ from config import load_config
 
 DEBOUNCE_SECONDS = 2.0
 LOG_NAME = "git_watcher"
+HEALTH_CHECK_INTERVAL = 30  # seconds
+MAX_EVENT_AGE = 60  # seconds - force commit if events pending too long
+POLLING_INTERVAL = 10  # seconds - fallback polling mode
 
 
 class DebouncedHandler(FileSystemEventHandler):
@@ -24,26 +28,44 @@ class DebouncedHandler(FileSystemEventHandler):
         self._on_change = on_change
         self._timer = None
         self._lock = threading.Lock()
+        self._last_event_time = None
 
     def on_any_event(self, event):
-        if "/.git/" in event.src_path:
+        # Skip .git directory and common temp files
+        path = event.src_path
+        if "/.git/" in path or "/.git" in path:
             return
+        if any(part.startswith(".") for part in Path(path).parts):
+            # Skip hidden files but allow the memory directory
+            if "/memory/" not in path and not path.endswith("MEMORY.md"):
+                return
+        
         with self._lock:
+            self._last_event_time = time.time()
             if self._timer:
                 self._timer.cancel()
             self._timer = threading.Timer(DEBOUNCE_SECONDS, self._on_change)
             self._timer.daemon = True
             self._timer.start()
 
+    def get_last_event_time(self):
+        with self._lock:
+            return self._last_event_time
 
-def run_git(args, repo_path, timeout=30):
+
+def run_git(args, repo_path, timeout=30, env=None):
     cmd = ["git", "-C", repo_path] + args
+    # Merge any additional env vars
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     return subprocess.run(
         cmd,
         check=False,
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=run_env,
     )
 
 
@@ -63,7 +85,24 @@ def has_changes(repo_path):
     return bool(result.stdout.strip())
 
 
+def ensure_git_identity(repo_path):
+    """Ensure git user identity is set for commits."""
+    # Check if user.name is set
+    result = run_git(["config", "user.name"], repo_path)
+    if result.returncode != 0 or not result.stdout.strip():
+        # Try global config
+        result = run_git(["config", "--global", "user.name"], repo_path)
+        if result.returncode != 0 or not result.stdout.strip():
+            # Set a default identity
+            run_git(["config", "user.name", "Git Watcher"], repo_path)
+            run_git(["config", "user.email", "gitwatcher@local"], repo_path)
+            logging.info("Set default git user identity for %s", repo_path)
+
+
 def auto_commit_and_push(repo_path):
+    # Ensure git identity is set before committing
+    ensure_git_identity(repo_path)
+    
     result = run_git(["add", "-A"], repo_path)
     if result.returncode != 0:
         logging.error("git add failed: %s", result.stderr.strip())
@@ -140,6 +179,62 @@ def setup_logging(log_level="ERROR"):
     )
 
 
+def check_and_commit(watch_path, token, chat_id, force=False):
+    """Check for changes and commit if found. Returns True if commit happened."""
+    try:
+        if not has_changes(watch_path):
+            return False
+        
+        if force:
+            logging.info("Force commit triggered - pending changes too old")
+        
+        diff_text = get_diff(watch_path)
+        if not diff_text.strip():
+            return False
+        
+        committed = auto_commit_and_push(watch_path)
+        if committed:
+            send_telegram_diff(token, chat_id, diff_text)
+        return committed
+    except Exception as exc:
+        logging.exception("Error handling change: %s", exc)
+        return False
+
+
+def start_watcher(watch_path, token, chat_id):
+    """Start the file watcher and return (observer, event_handler)."""
+    logging.info("Starting watcher for %s", watch_path)
+
+    def handle_change():
+        check_and_commit(watch_path, token, chat_id)
+
+    event_handler = DebouncedHandler(handle_change)
+    observer = Observer()
+    observer.schedule(event_handler, watch_path, recursive=True)
+    observer.start()
+    
+    return observer, event_handler
+
+
+def run_polling_mode(watch_path, token, chat_id):
+    """Simple polling mode for when FSEvents don't work (e.g., LaunchAgent)."""
+    logging.info("Starting POLLING watcher for %s (checking every %ds)", watch_path, POLLING_INTERVAL)
+    
+    last_commit_time = time.time()
+    
+    while True:
+        time.sleep(POLLING_INTERVAL)
+        
+        try:
+            # Check for changes and commit
+            if has_changes(watch_path):
+                logging.info("Changes detected via polling")
+                check_and_commit(watch_path, token, chat_id)
+                last_commit_time = time.time()
+        except Exception as exc:
+            logging.exception("Error in polling loop: %s", exc)
+
+
 def main():
     # Load config first to get log level
     config = load_config()
@@ -150,50 +245,100 @@ def main():
 
     if not token or not chat_id:
         logging.error("Missing Telegram bot token or chat ID in config/env")
-        return
+        sys.exit(1)
 
     if not watch_path:
         logging.error("Missing watched_dir in config/env")
-        return
+        sys.exit(1)
 
     if not os.path.isdir(watch_path):
         logging.error("Watch path does not exist: %s", watch_path)
-        return
+        sys.exit(1)
 
     # Check if it's a git repo
     git_check = run_git(["status"], watch_path)
     if git_check.returncode != 0:
         logging.error("Watch path is not a valid git repository: %s", watch_path)
+        sys.exit(1)
+
+    # Initial commit check on startup
+    check_and_commit(watch_path, token, chat_id)
+
+    # Check if we should use polling mode (more reliable for LaunchAgents/daemons)
+    # Set USE_POLLING=1 env var to force polling mode
+    use_polling = os.environ.get("USE_POLLING", "1").lower() in ("1", "true", "yes")
+    
+    if use_polling:
+        logging.info("Using POLLING mode (set USE_POLLING=0 to use FSEvents instead)")
+        try:
+            run_polling_mode(watch_path, token, chat_id)
+        except KeyboardInterrupt:
+            logging.info("Stopping watcher (Ctrl+C)")
         return
 
-    logging.info("Starting watcher for %s", watch_path)
-
-    def handle_change():
-        try:
-            if not has_changes(watch_path):
-                return
-            diff_text = get_diff(watch_path)
-            if not diff_text.strip():
-                return
-            committed = auto_commit_and_push(watch_path)
-            if committed:
-                send_telegram_diff(token, chat_id, diff_text)
-        except Exception as exc:
-            logging.exception("Error handling change: %s", exc)
-
-    event_handler = DebouncedHandler(handle_change)
-    observer = Observer()
-    observer.schedule(event_handler, watch_path, recursive=True)
-    observer.start()
+    # FSEvents mode (may not work in all contexts)
+    observer = None
+    event_handler = None
+    last_health_check = time.time()
+    restart_count = 0
+    max_restarts = 10
 
     try:
-        while True:
-            time.sleep(1)
+        while restart_count < max_restarts:
+            try:
+                # Start or restart the watcher
+                if observer is not None:
+                    logging.warning("Restarting watcher (restart #%d)", restart_count)
+                    try:
+                        observer.stop()
+                        observer.join(timeout=5)
+                    except Exception as e:
+                        logging.warning("Error stopping observer: %s", e)
+                
+                observer, event_handler = start_watcher(watch_path, token, chat_id)
+                restart_count += 1
+                
+                # Main loop with health checks
+                while True:
+                    time.sleep(1)
+                    
+                    now = time.time()
+                    
+                    # Periodic health check
+                    if now - last_health_check >= HEALTH_CHECK_INTERVAL:
+                        last_health_check = now
+                        
+                        # Check if observer is still alive
+                        if not observer.is_alive():
+                            logging.error("Observer died, restarting...")
+                            break  # Break inner loop to restart
+                        
+                        # Check for stale pending changes (force commit if events aged out)
+                        if event_handler:
+                            last_event = event_handler.get_last_event_time()
+                            if last_event and (now - last_event) > MAX_EVENT_AGE:
+                                if has_changes(watch_path):
+                                    logging.warning("Detected stale pending changes, forcing commit")
+                                    check_and_commit(watch_path, token, chat_id, force=True)
+                                    # Reset event time
+                                    with event_handler._lock:
+                                        event_handler._last_event_time = None
+                        
+                        # Periodic check for changes (backup in case events are missed)
+                        check_and_commit(watch_path, token, chat_id)
+                        
+            except Exception as e:
+                logging.exception("Watcher error: %s", e)
+                time.sleep(5)  # Wait before restart
+                continue
+                
     except KeyboardInterrupt:
-        logging.info("Stopping watcher")
+        logging.info("Stopping watcher (Ctrl+C)")
     finally:
-        observer.stop()
-        observer.join()
+        if observer is not None:
+            observer.stop()
+            observer.join(timeout=5)
+        logging.info("Watcher stopped")
 
 
 if __name__ == "__main__":

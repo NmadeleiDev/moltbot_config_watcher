@@ -80,7 +80,11 @@ def setup_macos_launchagent(script_path, auto_start=False):
         "Label": "com.git_watcher",
         "ProgramArguments": [sys.executable, str(script_path)],
         "RunAtLoad": True,
-        "KeepAlive": True,
+        "KeepAlive": {
+            "SuccessfulExit": False,
+            "Crashed": True,
+        },
+        "ThrottleInterval": 10,
         "StandardOutPath": str(LOG_DIR / "git_watcher.out.log"),
         "StandardErrorPath": str(LOG_DIR / "git_watcher.err.log"),
         "EnvironmentVariables": {
