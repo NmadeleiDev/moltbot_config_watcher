@@ -4,7 +4,7 @@ A lightweight tool that watches a git repository for file changes and automatica
 
 ## Why Git Watcher?
 
-This tool was originally created to automatically save updates in the **Moltbot workdir** to a git repository, ensuring all state changes are preserved in git history. It also sends exact diffs of those changes to Telegram, so you always know exactly what Moltbot saves to its internal state.
+This tool was originally created to automatically save updates in the [Moltbot](https://www.molt.bot/) workdir to a git repository, ensuring all state changes are preserved in git history. It also sends exact diffs of those changes to Telegram, so you always know exactly what [Moltbot](https://www.molt.bot/) saves to its internal state.
 
 A nice tool for observability psychos who want to track every change 🙂
 
