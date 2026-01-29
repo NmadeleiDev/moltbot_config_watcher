@@ -92,13 +92,28 @@ while true; do
     print_error "Chat ID cannot be empty"
 done
 
+# Log level
+print_info "Select log level (default: ERROR):"
+echo "  1) ERROR - Only errors (recommended for production)"
+echo "  2) INFO  - General information"
+echo "  3) DEBUG - Verbose debugging"
+read -rp "Choice [1-3] (default: 1): " log_choice
+
+case "$log_choice" in
+    2) LOG_LEVEL="INFO" ;;
+    3) LOG_LEVEL="DEBUG" ;;
+    *) LOG_LEVEL="ERROR" ;;
+esac
+print_success "Log level set to: $LOG_LEVEL"
+
 # Create config file
 print_info "Creating configuration file..."
 cat > "$CONFIG_FILE" << EOF
 {
   "watched_dir": "$watched_dir",
   "bot_token": "$bot_token",
-  "chat_id": "$chat_id"
+  "chat_id": "$chat_id",
+  "log_level": "$LOG_LEVEL"
 }
 EOF
 print_success "Configuration saved to $CONFIG_FILE"
@@ -142,8 +157,16 @@ EOF
         
         print_success "LaunchAgent created at $PLIST_PATH"
         echo ""
-        print_info "To start the service now, run:"
-        echo "  launchctl load -w $PLIST_PATH"
+        read -rp "Start the service now? [Y/n]: " start_now
+        start_now=${start_now:-Y}
+        if [[ "$start_now" =~ ^[Yy]$ ]]; then
+            launchctl load -w "$PLIST_PATH" 2>/dev/null || true
+            print_success "Service started"
+            print_info "View logs: tail -f ~/.git_watcher/logs/git_watcher.log"
+        else
+            print_info "To start later, run:"
+            echo "  launchctl load -w $PLIST_PATH"
+        fi
         echo ""
         print_info "To stop the service:"
         echo "  launchctl unload -w $PLIST_PATH"
@@ -173,16 +196,23 @@ EOF
         
         print_success "Systemd service created at $SERVICE_PATH"
         echo ""
-        print_info "To start the service now, run:"
-        echo "  systemctl --user daemon-reload"
-        echo "  systemctl --user enable git_watcher.service"
-        echo "  systemctl --user start git_watcher.service"
+        read -rp "Start the service now? [Y/n]: " start_now
+        start_now=${start_now:-Y}
+        if [[ "$start_now" =~ ^[Yy]$ ]]; then
+            systemctl --user daemon-reload
+            systemctl --user enable git_watcher.service
+            systemctl --user start git_watcher.service
+            print_success "Service started"
+            print_info "View logs: journalctl --user -u git_watcher.service -f"
+        else
+            print_info "To start later, run:"
+            echo "  systemctl --user daemon-reload"
+            echo "  systemctl --user enable git_watcher.service"
+            echo "  systemctl --user start git_watcher.service"
+        fi
         echo ""
         print_info "To check status:"
         echo "  systemctl --user status git_watcher.service"
-        echo ""
-        print_info "To view logs:"
-        echo "  journalctl --user -u git_watcher.service -f"
         ;;
         
     *)

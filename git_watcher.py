@@ -115,13 +115,23 @@ def send_telegram_diff(token, chat_id, diff_text):
             logging.error("Telegram send error: %s", exc)
 
 
-def setup_logging():
+def setup_logging(log_level="ERROR"):
     log_dir = Path.home() / ".git_watcher" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "git_watcher.log"
 
+    # Map string level to logging constant
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    level = level_map.get(log_level.upper(), logging.ERROR)
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file),
@@ -131,8 +141,9 @@ def setup_logging():
 
 
 def main():
-    setup_logging()
+    # Load config first to get log level
     config = load_config()
+    setup_logging(config.get("log_level", "ERROR"))
     token = config.get("bot_token")
     chat_id = config.get("chat_id")
     watch_path = config.get("watched_dir")

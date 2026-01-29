@@ -9,9 +9,10 @@ A lightweight tool that watches a git repository for file changes and automatica
 - 🚀 Auto-pushes to remote repository
 - 📨 Sends diffs to Telegram (supports long diffs via chunking)
 - ⚡ Debounced events (2-second delay to batch rapid changes)
-- 📝 Comprehensive logging
+- 📝 Configurable logging levels (ERROR, INFO, DEBUG)
 - 🖥️ Runs as a background service (macOS LaunchAgent / Linux systemd)
 - ⚙️ Configurable via environment variables or config file
+- 🚀 Optional auto-start during setup
 
 ## Requirements
 
@@ -43,9 +44,13 @@ The script will:
   - Path to the git repository to watch
   - Telegram bot token
   - Telegram chat ID
+  - Log level (ERROR, INFO, DEBUG)
 - Create appropriate service for your OS
+- Optionally start the service immediately
 
 ### 3. Start the service
+
+The setup script will ask if you want to start the service automatically. If you skipped it or need to control it manually:
 
 **macOS:**
 ```bash
@@ -94,6 +99,24 @@ Configuration can be provided via:
    - `GIT_WATCHER_WATCHED_DIR` - Path to git repository
    - `GIT_WATCHER_BOT_TOKEN` - Telegram bot token
    - `GIT_WATCHER_CHAT_ID` - Telegram chat ID
+   - `GIT_WATCHER_LOG_LEVEL` - Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: ERROR)
+
+### Example Config File
+
+```json
+{
+  "watched_dir": "/path/to/your/repo",
+  "bot_token": "YOUR_BOT_TOKEN",
+  "chat_id": "YOUR_CHAT_ID",
+  "log_level": "ERROR"
+}
+```
+
+### Log Levels
+
+- **ERROR** (default) - Only errors, silent during normal operation
+- **INFO** - General operational information
+- **DEBUG** - Verbose output for troubleshooting
 
 ### Getting Your Telegram Chat ID
 
