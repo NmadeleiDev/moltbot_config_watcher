@@ -1,6 +1,6 @@
 # Git Watcher
 
-A lightweight tool that watches a git repository for file changes and automatically commits, pushes, and sends diffs to Telegram.
+A lightweight tool that watches a git repository for **root-level Markdown file changes** and automatically commits, pushes, and sends diffs to Telegram.
 
 ## Why Git Watcher?
 
@@ -10,7 +10,7 @@ A nice tool for observability psychos who want to track every change 🙂
 
 ## Features
 
-- 🔍 Watches any local git repository for file changes
+- 🔍 Watches **root-level `*.md` files only** (not recursive, not other file types)
 - 🤖 Auto-commits changes with timestamped messages
 - 🚀 Auto-pushes to remote repository
 - 📨 Sends diffs to Telegram (supports long diffs via chunking)
@@ -176,13 +176,20 @@ All logs are stored in `~/.git_watcher/logs/`:
 
 ## How It Works
 
-1. The watcher monitors the configured directory recursively using `watchdog`
-2. When a file changes, it waits 2 seconds (debounce) for any additional changes
-3. Checks if there are actual git changes using `git status`
-4. Gets the diff using `git diff`
-5. Commits all changes with message: "Auto-commit: YYYY-MM-DD HH:MM:SS"
-6. Pushes to the remote repository
-7. Sends the diff to your Telegram chat (chunked if >4000 characters)
+1. The watcher monitors the **root level only** of the configured directory using `watchdog`
+2. Only **`*.md` files** trigger commits (other files and subdirectories are ignored)
+3. When a file changes, it waits 2 seconds (debounce) for any additional changes
+4. Checks if there are actual git changes using `git status`
+5. Gets the diff using `git diff --cached` (includes new untracked files)
+6. Commits changes with message: "Auto-commit: YYYY-MM-DD HH:MM:SS"
+7. Pushes to the remote repository
+8. Sends the diff to your Telegram chat (chunked if >4000 characters)
+
+## Important Notes
+
+- **Root-level only**: The watcher only monitors files directly in the watched directory, not in subdirectories
+- **Markdown only**: Only files ending in `.md` are tracked and committed
+- **New files**: Untracked `.md` files are automatically added and committed
 
 ## File Structure
 
@@ -220,7 +227,12 @@ Check the logs:
 
 - Verify the watched directory exists and is a git repository
 - Check that `.git` folder exists in the watched directory
+- Ensure the changed files are root-level `*.md` files (not in subdirectories)
 - Look at the logs for any errors
+
+### Subdirectory files not being committed
+
+This is by design. The watcher only monitors root-level `*.md` files. If you need to track files in subdirectories, you'll need to modify the `patterns` and `recursive` settings in `git_watcher.py`.
 
 ## Uninstallation
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import PatternMatchingEventHandler
 from watchdog.observers import Observer
 
 from config import load_config
@@ -22,24 +22,19 @@ MAX_EVENT_AGE = 60  # seconds - force commit if events pending too long
 POLLING_INTERVAL = 10  # seconds - fallback polling mode
 
 
-class DebouncedHandler(FileSystemEventHandler):
-    def __init__(self, on_change):
-        super().__init__()
+class DebouncedHandler(PatternMatchingEventHandler):
+    def __init__(self, on_change, patterns=None):
+        # Default to watching only .md files if no patterns specified
+        if patterns is None:
+            patterns = ["*.md"]
+        super().__init__(patterns=patterns, ignore_patterns=None, ignore_directories=True)
         self._on_change = on_change
         self._timer = None
         self._lock = threading.Lock()
         self._last_event_time = None
 
     def on_any_event(self, event):
-        # Skip .git directory and common temp files
-        path = event.src_path
-        if "/.git/" in path or "/.git" in path:
-            return
-        if any(part.startswith(".") for part in Path(path).parts):
-            # Skip hidden files but allow the memory directory
-            if "/memory/" not in path and not path.endswith("MEMORY.md"):
-                return
-        
+        # PatternMatchingEventHandler already filters by pattern and ignores directories
         with self._lock:
             self._last_event_time = time.time()
             if self._timer:
@@ -70,19 +65,44 @@ def run_git(args, repo_path, timeout=30, env=None):
 
 
 def get_diff(repo_path):
-    result = run_git(["diff"], repo_path)
+    """Get diff of tracked root-level .md file changes."""
+    result = run_git(["diff", "--", "*.md"], repo_path)
     if result.returncode != 0:
         logging.error("git diff failed: %s", result.stderr.strip())
         return ""
     return result.stdout
 
 
+def get_staged_diff(repo_path):
+    """Get diff of staged root-level .md files only."""
+    result = run_git(["diff", "--cached", "--", "*.md"], repo_path)
+    if result.returncode != 0:
+        logging.error("git diff --cached failed: %s", result.stderr.strip())
+        return ""
+    return result.stdout
+
+
 def has_changes(repo_path):
+    """Check if there are changes to root-level .md files only."""
     result = run_git(["status", "--porcelain"], repo_path)
     if result.returncode != 0:
         logging.error("git status failed: %s", result.stderr.strip())
         return False
-    return bool(result.stdout.strip())
+    
+    # Filter to only root-level .md files (no path separators = root level)
+    lines = result.stdout.strip().split("\n")
+    for line in lines:
+        if not line.strip():
+            continue
+        # Status format: XY filename or XY filename -> newfilename (for renames)
+        # Extract the filename (after the status codes)
+        parts = line.split()
+        if len(parts) >= 2:
+            filename = parts[-1]  # Get the last part (handles renames too)
+            # Check if it's a root-level .md file (no "/" and ends with .md)
+            if "/" not in filename and filename.endswith(".md"):
+                return True
+    return False
 
 
 def ensure_git_identity(repo_path):
@@ -99,14 +119,43 @@ def ensure_git_identity(repo_path):
             logging.info("Set default git user identity for %s", repo_path)
 
 
+def get_root_md_files(repo_path):
+    """Get list of root-level .md files that have changes."""
+    # Get all changed files
+    result = run_git(["status", "--porcelain"], repo_path)
+    if result.returncode != 0:
+        return []
+    
+    root_md_files = []
+    for line in result.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        # Parse status line: XY filename
+        parts = line.split()
+        if len(parts) >= 2:
+            filename = parts[-1]
+            # Only root-level .md files
+            if "/" not in filename and filename.endswith(".md"):
+                root_md_files.append(filename)
+    return root_md_files
+
+
 def auto_commit_and_push(repo_path):
     # Ensure git identity is set before committing
     ensure_git_identity(repo_path)
     
-    result = run_git(["add", "-A"], repo_path)
-    if result.returncode != 0:
-        logging.error("git add failed: %s", result.stderr.strip())
+    # Get list of root-level .md files to add
+    files_to_add = get_root_md_files(repo_path)
+    if not files_to_add:
+        logging.debug("No root-level .md files to add")
         return False
+    
+    # Add only specific root-level .md files
+    for filepath in files_to_add:
+        result = run_git(["add", filepath], repo_path)
+        if result.returncode != 0:
+            logging.error("git add %s failed: %s", filepath, result.stderr.strip())
+            return False
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     message = f"Auto-commit: {timestamp}"
@@ -189,12 +238,16 @@ def check_and_commit(watch_path, token, chat_id, force=False):
             logging.info("Force commit triggered - pending changes too old")
         
         diff_text = get_diff(watch_path)
-        if not diff_text.strip():
-            return False
+        # Note: diff_text may be empty for new untracked files, but we still commit
         
         committed = auto_commit_and_push(watch_path)
         if committed:
-            send_telegram_diff(token, chat_id, diff_text)
+            # Get the actual diff after staging (includes new files)
+            staged_diff = get_staged_diff(watch_path)
+            if staged_diff:
+                send_telegram_diff(token, chat_id, staged_diff)
+            elif diff_text.strip():
+                send_telegram_diff(token, chat_id, diff_text)
         return committed
     except Exception as exc:
         logging.exception("Error handling change: %s", exc)
@@ -210,7 +263,7 @@ def start_watcher(watch_path, token, chat_id):
 
     event_handler = DebouncedHandler(handle_change)
     observer = Observer()
-    observer.schedule(event_handler, watch_path, recursive=True)
+    observer.schedule(event_handler, watch_path, recursive=False)
     observer.start()
     
     return observer, event_handler
