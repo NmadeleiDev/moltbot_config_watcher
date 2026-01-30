@@ -32,7 +32,7 @@ A nice tool for observability psychos who want to track every change 🙂
 ### 1. Clone the repository
 
 ```bash
-git clone git@github.com:NmadeleiDev/git_watcher.git
+git clone https://github.com/NmadeleiDev/moltbot_config_watcher.git
 cd git_watcher
 ```
 
